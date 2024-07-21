@@ -12,10 +12,12 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
+	"unsafe"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/pmezard/go-difflib/difflib"
@@ -68,7 +70,7 @@ func ObjectsAreEqual(expected, actual interface{}) bool {
 
 	exp, ok := expected.([]byte)
 	if !ok {
-		return reflect.DeepEqual(expected, actual)
+		return objectsAreEqual(expected, actual)
 	}
 
 	act, ok := actual.([]byte)
@@ -79,6 +81,226 @@ func ObjectsAreEqual(expected, actual interface{}) bool {
 		return exp == nil && act == nil
 	}
 	return bytes.Equal(exp, act)
+}
+
+func objectsAreEqual(expected, actual interface{}) bool {
+	v1 := reflect.ValueOf(expected)
+	if hasRegisteredType(v1, make(map[visit]bool)) {
+		v2 := reflect.ValueOf(actual)
+
+		newExpected, newActual := make(map[string]interface{}), make(map[string]interface{})
+
+		if !extractUnregisteredObjectsAndAssert("", v1, v2, newExpected, newActual, make(map[visit]bool)) {
+			return false
+		}
+		return reflect.DeepEqual(newExpected, newActual)
+	}
+	return reflect.DeepEqual(expected, actual)
+}
+
+type visit struct {
+	p1 unsafe.Pointer
+	p2 unsafe.Pointer
+	t  reflect.Type
+}
+
+func hasRegisteredType(rv reflect.Value, visited map[visit]bool) bool {
+	if !rv.IsValid() {
+		return false
+	}
+
+	if _, exist := registeredEqualComparisons[rv.Type()]; exist {
+		return true
+	}
+
+	maybeCyclic := func(a reflect.Value) bool {
+		switch a.Kind() {
+		case reflect.Slice, reflect.Map, reflect.Pointer:
+			return !a.IsNil()
+		}
+		return false
+	}
+
+	if maybeCyclic(rv) {
+		v := visit{
+			p1: rv.UnsafePointer(),
+			t:  rv.Type(),
+		}
+		if visited[v] {
+			return false
+		}
+		visited[v] = true
+	}
+
+	switch rv.Kind() {
+	case reflect.Array:
+		for i := 0; i < rv.Len(); i++ {
+			if hasRegisteredType(rv.Index(i), visited) {
+				return true
+			}
+		}
+	case reflect.Interface:
+		if rv.IsNil() {
+			return false
+		}
+		return hasRegisteredType(rv.Elem(), visited)
+	case reflect.Map:
+		if rv.IsNil() || rv.Len() == 0 {
+			return false
+		}
+
+		iter := rv.MapRange()
+		for iter.Next() {
+			if hasRegisteredType(iter.Value(), visited) {
+				return true
+			}
+		}
+	case reflect.Pointer:
+		if rv.IsNil() {
+			return false
+		}
+		return hasRegisteredType(rv.Elem(), visited)
+	case reflect.Slice:
+		if rv.IsNil() || rv.Len() == 0 {
+			return false
+		}
+		for i := 0; i < rv.Len(); i++ {
+			if hasRegisteredType(rv.Index(i), visited) {
+				return true
+			}
+		}
+	case reflect.Struct:
+		for i, num := 0, rv.NumField(); i < num; i++ {
+			if hasRegisteredType(rv.Field(i), visited) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func extractUnregisteredObjectsAndAssert(
+	path string,
+	v1, v2 reflect.Value,
+	newV1, newV2 map[string]interface{},
+	visited map[visit]bool,
+) bool {
+	if !v1.IsValid() || !v2.IsValid() {
+		return v1.IsValid() == v2.IsValid()
+	}
+	if v1.Type() != v2.Type() {
+		return false
+	}
+
+	if !hasRegisteredType(v1, make(map[visit]bool)) {
+		if v1.Kind() != reflect.Interface {
+			newV1[path] = copyValue(v1).Interface()
+			newV2[path] = copyValue(v2).Interface()
+		}
+		return true
+	}
+
+	if comparison, ok := registeredEqualComparisons[v1.Type()]; ok {
+		return comparison(copyValue(v1).Interface(), copyValue(v2).Interface())
+	}
+
+	maybeCyclic := func(a, b reflect.Value) bool {
+		switch a.Kind() {
+		case reflect.Slice, reflect.Map, reflect.Pointer:
+			return !a.IsNil() && !b.IsNil()
+		}
+		return false
+	}
+
+	if maybeCyclic(v1, v2) {
+		v := visit{
+			p1: v1.UnsafePointer(),
+			p2: v2.UnsafePointer(),
+			t:  v1.Type(),
+		}
+		if visited[v] {
+			return true
+		}
+		visited[v] = true
+	}
+
+	switch v1.Kind() {
+	case reflect.Array:
+		if v1.Len() != v2.Len() {
+			return false
+		}
+		for i := 0; i < v1.Len(); i++ {
+			if !extractUnregisteredObjectsAndAssert(path+"."+strconv.Itoa(i), v1.Index(i), v2.Index(i), newV1, newV2, visited) {
+				return false
+			}
+		}
+	case reflect.Interface:
+		if v1.IsNil() || v2.IsNil() {
+			return v1.IsNil() == v2.IsNil()
+		}
+		return extractUnregisteredObjectsAndAssert(path, v1.Elem(), v2.Elem(), newV1, newV2, visited)
+	case reflect.Map:
+		if v1.Len() != v2.Len() {
+			return false
+		}
+
+		iter := v1.MapRange()
+		i := 0
+		for iter.Next() {
+			val1 := iter.Value()
+			val2 := v2.MapIndex(iter.Key())
+			if !val1.IsValid() || !val2.IsValid() || !extractUnregisteredObjectsAndAssert(
+				path+"."+strconv.Itoa(i), val1, val2, newV1, newV2, visited,
+			) {
+				return false
+			}
+			i++
+		}
+	case reflect.Pointer:
+		if v1.IsNil() || v2.IsNil() {
+			return v1.IsNil() == v2.IsNil()
+		}
+		return extractUnregisteredObjectsAndAssert(path, v1.Elem(), v2.Elem(), newV1, newV2, visited)
+	case reflect.Slice:
+		if v1.IsNil() || v2.IsNil() {
+			return v1.IsNil() == v2.IsNil()
+		}
+		if v1.Len() != v2.Len() {
+			return false
+		}
+
+		for i := 0; i < v1.Len(); i++ {
+			if !extractUnregisteredObjectsAndAssert(path+"."+strconv.Itoa(i), v1.Index(i), v2.Index(i), newV1, newV2, visited) {
+				return false
+			}
+		}
+	case reflect.Struct:
+		// Make unexported fields in the struct addressable.
+		// See https://stackoverflow.com/questions/42664837/how-to-access-unexported-struct-fields for details.
+		v1, v2 = copyValue(v1), copyValue(v2)
+		for i, num := 0, v1.NumField(); i < num; i++ {
+			if !extractUnregisteredObjectsAndAssert(
+				path+"."+strconv.Itoa(i),
+				makeUnexportedFieldAccessible(v1.Field(i)), makeUnexportedFieldAccessible(v2.Field(i)),
+				newV1, newV2,
+				visited,
+			) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func makeUnexportedFieldAccessible(v reflect.Value) reflect.Value {
+	v = reflect.NewAt(v.Type(), unsafe.Pointer(v.UnsafeAddr())).Elem()
+	return v
+}
+
+func copyValue(v reflect.Value) reflect.Value {
+	n := reflect.New(v.Type()).Elem()
+	n.Set(v)
+	return n
 }
 
 // copyExportedFields iterates downward through nested data structures and creates a copy

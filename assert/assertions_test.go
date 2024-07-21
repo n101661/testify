@@ -516,6 +516,38 @@ func TestIsType(t *testing.T) {
 
 func TestEqual(t *testing.T) {
 	type myType string
+	type myRegisteredType struct {
+		val     string
+		notCare int
+		next    *myRegisteredType
+	}
+	type myStruct struct {
+		val            string
+		registeredType *myRegisteredType
+	}
+	type node struct {
+		val  int
+		next *node
+	}
+	type myNodeStruct struct {
+		head *node
+		t    *myRegisteredType
+	}
+
+	newCyclicRegisteredType := func(val string, notCare int) *myRegisteredType {
+		n := &myRegisteredType{val: val, notCare: notCare}
+		n.next = n
+		return n
+	}
+	newCyclicNode := func(val int) *node {
+		n := &node{val: val}
+		n.next = n
+		return n
+	}
+
+	RegisterEqualComparison(reflect.TypeOf(&myRegisteredType{}), func(expected, actual interface{}) bool {
+		return expected.(*myRegisteredType).val == actual.(*myRegisteredType).val
+	})
 
 	mockT := new(testing.T)
 	var m map[string]interface{}
@@ -535,13 +567,22 @@ func TestEqual(t *testing.T) {
 		{uint64(123), uint64(123), true, ""},
 		{myType("1"), myType("1"), true, ""},
 		{&struct{}{}, &struct{}{}, true, "pointer equality is based on equality of underlying value"},
+		{myStruct{"1", newCyclicRegisteredType("2", 3)}, myStruct{"1", newCyclicRegisteredType("2", 4)}, true, "value equality is based on registered comparison function"},
+		{[2]interface{}{1, newCyclicRegisteredType("2", 3)}, [2]interface{}{1, newCyclicRegisteredType("2", 4)}, true, "array equality is based on registered comparison function"},
+		{map[string]interface{}{"1": 2, "3": newCyclicRegisteredType("4", 5)}, map[string]interface{}{"1": 2, "3": newCyclicRegisteredType("4", 6)}, true, "map equality is based on registered comparison function"},
+		{[]interface{}{1, newCyclicRegisteredType("2", 3)}, []interface{}{1, newCyclicRegisteredType("2", 4)}, true, "slice equality is based on registered comparison function"},
+		{myNodeStruct{newCyclicNode(1), newCyclicRegisteredType("2", 3)}, myNodeStruct{newCyclicNode(1), newCyclicRegisteredType("2", 4)}, true, "cyclic unregistered type works"},
 
 		// Not expected to be equal
 		{m["bar"], "something", false, ""},
 		{myType("1"), myType("2"), false, ""},
+		{[2]interface{}{1, newCyclicRegisteredType("2", 3)}, [2]interface{}{1, newCyclicRegisteredType("3", 3)}, false, "array inequality is based on registered comparison function"},
+		{map[string]interface{}{"1": 2, "3": newCyclicRegisteredType("4", 5)}, map[string]interface{}{"1": 2, "3": newCyclicRegisteredType("5", 5)}, false, "map inequality is based on registered comparison function"},
+		{[]interface{}{1, newCyclicRegisteredType("2", 3)}, []interface{}{1, newCyclicRegisteredType("3", 3)}, false, "slice inequality is based on registered comparison function"},
 
-		// A case that might be confusing, especially with numeric literals
-		{10, uint(10), false, ""},
+		// Cases that might be confusing
+		{10, uint(10), false, "numeric literals"},
+		{myStruct{"1", &myRegisteredType{"2", 3, &myRegisteredType{"4", 5, nil}}}, myStruct{"1", &myRegisteredType{"2", 3, &myRegisteredType{"5", 5, nil}}}, true, "value equality is based on registered comparison function"},
 	}
 
 	for _, c := range cases {
