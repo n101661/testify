@@ -4,14 +4,14 @@ import (
 	"reflect"
 )
 
-type EqualComparisonFunc func(expected, actual interface{}) bool
+type ComparisonFunc func(e1, e2 interface{}) int
 
-var registeredEqualComparisons = map[reflect.Type]EqualComparisonFunc{}
+var registeredComparisons = map[reflect.Type]ComparisonFunc{}
 
-func RegisterEqualComparison(t reflect.Type, f EqualComparisonFunc) (exist bool) {
-	if _, exist = registeredEqualComparisons[t]; exist {
+func RegisterComparison(t reflect.Type, f ComparisonFunc) (exist bool) {
+	if _, exist = registeredComparisons[t]; exist {
 		return
 	}
-	registeredEqualComparisons[t] = f
+	registeredComparisons[t] = f
 	return false
 }

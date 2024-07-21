@@ -545,8 +545,15 @@ func TestEqual(t *testing.T) {
 		return n
 	}
 
-	RegisterEqualComparison(reflect.TypeOf(&myRegisteredType{}), func(expected, actual interface{}) bool {
-		return expected.(*myRegisteredType).val == actual.(*myRegisteredType).val
+	RegisterComparison(reflect.TypeOf(&myRegisteredType{}), func(e1, e2 interface{}) int {
+		v1, v2 := e1.(*myRegisteredType), e2.(*myRegisteredType)
+		if v1.val == v2.val {
+			return 0
+		}
+		if v1.val < v2.val {
+			return -1
+		}
+		return 1
 	})
 
 	mockT := new(testing.T)

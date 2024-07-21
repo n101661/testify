@@ -90,7 +90,7 @@ func objectsAreEqual(expected, actual interface{}) bool {
 
 		newExpected, newActual := make(map[string]interface{}), make(map[string]interface{})
 
-		if !extractUnregisteredObjectsAndAssert("", v1, v2, newExpected, newActual, make(map[visit]bool)) {
+		if !extractUnregisteredObjectsAndCompare("", v1, v2, newExpected, newActual, make(map[visit]bool)) {
 			return false
 		}
 		return reflect.DeepEqual(newExpected, newActual)
@@ -109,7 +109,7 @@ func hasRegisteredType(rv reflect.Value, visited map[visit]bool) bool {
 		return false
 	}
 
-	if _, exist := registeredEqualComparisons[rv.Type()]; exist {
+	if _, exist := registeredComparisons[rv.Type()]; exist {
 		return true
 	}
 
@@ -179,7 +179,7 @@ func hasRegisteredType(rv reflect.Value, visited map[visit]bool) bool {
 	return false
 }
 
-func extractUnregisteredObjectsAndAssert(
+func extractUnregisteredObjectsAndCompare(
 	path string,
 	v1, v2 reflect.Value,
 	newV1, newV2 map[string]interface{},
@@ -200,8 +200,8 @@ func extractUnregisteredObjectsAndAssert(
 		return true
 	}
 
-	if comparison, ok := registeredEqualComparisons[v1.Type()]; ok {
-		return comparison(copyValue(v1).Interface(), copyValue(v2).Interface())
+	if comparison, ok := registeredComparisons[v1.Type()]; ok {
+		return comparison(copyValue(v1).Interface(), copyValue(v2).Interface()) == 0
 	}
 
 	maybeCyclic := func(a, b reflect.Value) bool {
@@ -230,7 +230,7 @@ func extractUnregisteredObjectsAndAssert(
 			return false
 		}
 		for i := 0; i < v1.Len(); i++ {
-			if !extractUnregisteredObjectsAndAssert(path+"."+strconv.Itoa(i), v1.Index(i), v2.Index(i), newV1, newV2, visited) {
+			if !extractUnregisteredObjectsAndCompare(path+"."+strconv.Itoa(i), v1.Index(i), v2.Index(i), newV1, newV2, visited) {
 				return false
 			}
 		}
@@ -238,7 +238,7 @@ func extractUnregisteredObjectsAndAssert(
 		if v1.IsNil() || v2.IsNil() {
 			return v1.IsNil() == v2.IsNil()
 		}
-		return extractUnregisteredObjectsAndAssert(path, v1.Elem(), v2.Elem(), newV1, newV2, visited)
+		return extractUnregisteredObjectsAndCompare(path, v1.Elem(), v2.Elem(), newV1, newV2, visited)
 	case reflect.Map:
 		if v1.Len() != v2.Len() {
 			return false
@@ -249,7 +249,7 @@ func extractUnregisteredObjectsAndAssert(
 		for iter.Next() {
 			val1 := iter.Value()
 			val2 := v2.MapIndex(iter.Key())
-			if !val1.IsValid() || !val2.IsValid() || !extractUnregisteredObjectsAndAssert(
+			if !val1.IsValid() || !val2.IsValid() || !extractUnregisteredObjectsAndCompare(
 				path+"."+strconv.Itoa(i), val1, val2, newV1, newV2, visited,
 			) {
 				return false
@@ -260,7 +260,7 @@ func extractUnregisteredObjectsAndAssert(
 		if v1.IsNil() || v2.IsNil() {
 			return v1.IsNil() == v2.IsNil()
 		}
-		return extractUnregisteredObjectsAndAssert(path, v1.Elem(), v2.Elem(), newV1, newV2, visited)
+		return extractUnregisteredObjectsAndCompare(path, v1.Elem(), v2.Elem(), newV1, newV2, visited)
 	case reflect.Slice:
 		if v1.IsNil() || v2.IsNil() {
 			return v1.IsNil() == v2.IsNil()
@@ -270,7 +270,7 @@ func extractUnregisteredObjectsAndAssert(
 		}
 
 		for i := 0; i < v1.Len(); i++ {
-			if !extractUnregisteredObjectsAndAssert(path+"."+strconv.Itoa(i), v1.Index(i), v2.Index(i), newV1, newV2, visited) {
+			if !extractUnregisteredObjectsAndCompare(path+"."+strconv.Itoa(i), v1.Index(i), v2.Index(i), newV1, newV2, visited) {
 				return false
 			}
 		}
@@ -279,7 +279,7 @@ func extractUnregisteredObjectsAndAssert(
 		// See https://stackoverflow.com/questions/42664837/how-to-access-unexported-struct-fields for details.
 		v1, v2 = copyValue(v1), copyValue(v2)
 		for i, num := 0, v1.NumField(); i < num; i++ {
-			if !extractUnregisteredObjectsAndAssert(
+			if !extractUnregisteredObjectsAndCompare(
 				path+"."+strconv.Itoa(i),
 				makeUnexportedFieldAccessible(v1.Field(i)), makeUnexportedFieldAccessible(v2.Field(i)),
 				newV1, newV2,
